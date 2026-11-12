@@ -92,10 +92,10 @@ fn staged_diff() -> Result<Vec<u8>> {
     }
 }
 
-/// Run `with-secrets ai opencode run` over the staged diff and return the
+/// Run `with-nono ai opencode run` over the staged diff and return the
 /// cleaned message.
 fn generate(diff_path: &Path) -> Result<String> {
-    let mut command = Command::new("with-secrets");
+    let mut command = Command::new("with-nono");
     command.args(["ai", "opencode", "run", "--auto"]);
     if let Some(model) = fast_model() {
         command.args(["-m", &model]);
