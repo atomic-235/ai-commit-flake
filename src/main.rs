@@ -7,16 +7,15 @@
 
 use std::env;
 use std::fs;
-use std::io::{self, IsTerminal, Write};
+use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::thread;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
 use clap::Parser;
+use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
 
 const PROMPT: &str = r#"Generate a Conventional Commits message for this diff.
@@ -113,9 +112,9 @@ fn generate(diff_path: &Path) -> Result<String> {
     }
     command.stdout(Stdio::piped()).stderr(Stdio::null());
 
-    let spinner = Spinner::start();
+    let spinner = spinner();
     let output = command.output();
-    drop(spinner);
+    spinner.finish_and_clear();
 
     let output = match output {
         Ok(output) => output,
@@ -238,58 +237,17 @@ fn proxy_url() -> Option<String> {
     Some(format!("http://127.0.0.1:{port}"))
 }
 
-/// Dot spinner on stderr while the model runs; silent when stderr is not a
-/// terminal (piped output, hm-switch).
-struct Spinner {
-    stop: Option<mpsc::Sender<()>>,
-    handle: Option<thread::JoinHandle<()>>,
-}
-
-impl Spinner {
-    fn start() -> Self {
-        if !io::stderr().is_terminal() {
-            return Self {
-                stop: None,
-                handle: None,
-            };
-        }
-
-        let (stop, rx) = mpsc::channel();
-        let handle = thread::spawn(move || {
-            let mut frame = 0;
-            loop {
-                match rx.recv_timeout(Duration::from_millis(100)) {
-                    Ok(()) | Err(RecvTimeoutError::Disconnected) => {
-                        eprint!("\r\x1b[K");
-                        return;
-                    }
-                    Err(RecvTimeoutError::Timeout) => {
-                        eprint!(
-                            "\r{} Generating...",
-                            SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
-                        );
-                        frame += 1;
-                    }
-                }
-            }
-        });
-
-        Self {
-            stop: Some(stop),
-            handle: Some(handle),
-        }
-    }
-}
-
-impl Drop for Spinner {
-    fn drop(&mut self) {
-        if let Some(stop) = self.stop.take() {
-            let _ = stop.send(());
-        }
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
+/// Spinner on stderr while the model runs. `ProgressDrawTarget::stderr` hides
+/// itself when stderr is not a terminal (piped output, hm-switch).
+fn spinner() -> ProgressBar {
+    let progress = ProgressBar::new_spinner();
+    progress.set_style(
+        ProgressStyle::with_template("{spinner} Generating...")
+            .expect("valid template")
+            .tick_strings(&SPINNER_FRAMES),
+    );
+    progress.enable_steady_tick(Duration::from_millis(100));
+    progress
 }
 
 /// Print text through a gum style, falling back to plain output without gum.

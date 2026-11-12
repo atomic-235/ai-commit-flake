@@ -94,7 +94,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git remote set-url origin "https[REDACTED:urlcreds]github.com/${GITHUB_REPOSITORY}.git"
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git add version.json flake.lock
           if ! git diff --cached --quiet; then
             git commit -m "release: ai-commit ${VERSION}"

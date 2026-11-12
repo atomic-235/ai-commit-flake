@@ -2,6 +2,9 @@
   lib,
   stdenvNoCC,
   fetchurl,
+  makeWrapper,
+  gum,
+  git,
 }:
 
 let
@@ -26,10 +29,13 @@ stdenvNoCC.mkDerivation {
   };
 
   dontUnpack = true;
+  nativeBuildInputs = [ makeWrapper ];
 
   installPhase = ''
     runHook preInstall
     install -Dm755 "$src" "$out/bin/ai-commit"
+    wrapProgram $out/bin/ai-commit \
+      --prefix PATH : ${lib.makeBinPath [ gum git ]}
     runHook postInstall
   '';
 
