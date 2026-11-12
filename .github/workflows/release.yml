@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - flake.nix
+      - package.nix
+      - static.nix
+      - .github/workflows/release.yml
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Rebuild and publish even if the release already exists"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31
+
+      - name: Read version from Cargo.toml
+        id: version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
+          test -n "$version"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether this version is already published
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "v${{ steps.version.outputs.version }}" >/dev/null 2>&1 \
+            && [ "${{ inputs.force }}" != "true" ]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build static binary
+        id: build
+        if: steps.check.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          jq --arg v "$VERSION" '.version = $v | .assets = {}' version.json > version.json.tmp
+          mv version.json.tmp version.json
+
+          out="$(nix build --no-link --print-out-paths '.#static^out')"
+          install -m755 "$out/bin/ai-commit" ai-commit-linux-x86_64
+          bin_sha="$(nix hash file --type sha256 --sri ai-commit-linux-x86_64)"
+
+          jq --arg s "$bin_sha" '.assets["x86_64-linux"] = $s' version.json > version.json.tmp
+          mv version.json.tmp version.json
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release asset
+        if: steps.build.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view "v${VERSION}" >/dev/null 2>&1; then
+            gh release create "v${VERSION}" --title "ai-commit ${VERSION}" \
+              --notes "Static ai-commit ${VERSION}."
+          fi
+          gh release upload "v${VERSION}" ai-commit-linux-x86_64 --clobber
+
+      # The published asset must satisfy the flake's fixed-output check before
+      # the commit points consumers at it.
+      - name: Verify the flake can consume the asset
+        if: steps.build.outputs.publish == 'true'
+        run: nix build --no-link .#default
+
+      - name: Commit and tag
+        if: steps.build.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https[REDACTED:urlcreds]github.com/${GITHUB_REPOSITORY}.git"
+          git add version.json flake.lock
+          if ! git diff --cached --quiet; then
+            git commit -m "release: ai-commit ${VERSION}"
+            git push origin HEAD:main
+          fi
+          git tag -f "v${VERSION}"
+          git tag -f latest
+          git push --force origin "v${VERSION}" latest
+
+      - name: Open issue when the build fails
+        if: failure()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh issue create \
+            --title "ai-commit ${VERSION}: build failed" \
+            --body "The release build for ai-commit ${VERSION} failed. Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
